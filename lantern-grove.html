@@ -216,7 +216,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xBDE8FF, 40, 100);
+scene.fog = new THREE.Fog(0xBDE8FF, 44, 118);
 
 const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, .1, 260);
 const CAM_OFF = new THREE.Vector3(0, 11.5, 13.5);
@@ -339,13 +339,17 @@ function heightAt(x, z){
   h *= flat(TOWN_HALL_AT.x, TOWN_HALL_AT.z, 5.8, 3.8);
   h *= flat(TRAIN_STATION_AT.x, TRAIN_STATION_AT.z, 11.5, 5.5);
   h *= flat(TRAIN_STATION_FRONT.x, TRAIN_STATION_FRONT.z, 7.4, 4.2);
-  h *= railFlat(TRAIN_TRACK_HALF, TRAIN_TRACK_Z, 3.7, 4.5);
+  h *= railFlat(TRAIN_TRACK_HALF+5, TRAIN_TRACK_Z, 4.2, 6.0);
   h *= flat(GRAVEYARD_AT.x, GRAVEYARD_AT.z, 5.2, 3.5);
   for(const [hx,hz] of HOUSE_SPOTS) h *= flat(hx, hz, 3.6, 3.5);
   return h;
 }
 
-const terraGeo = new THREE.CircleGeometry(WORLD_R+26, 90).toNonIndexed();
+// Tessellated ground grid (not a coarse fan) so the flattened corridors in heightAt
+// — the track bed, the station forecourt, plots, etc. — are actually flat in the mesh
+// instead of being smeared by huge interpolated triangles that poke up through them.
+const GROUND_R = WORLD_R + 26;
+const terraGeo = new THREE.PlaneGeometry(GROUND_R*2, GROUND_R*2, 74, 74).toNonIndexed();
 terraGeo.rotateX(-Math.PI/2);
 {
   const pos = terraGeo.attributes.position;
@@ -707,12 +711,39 @@ treeSpots.forEach(([x,z],i)=>{
 });
 stump(-5,-15); stump(18,13); mushroom(-10,4); mushroom(6,16);
 
-/* soft hills around the rim */
-for(let i=0;i<14;i++){
-  const a = i/14*Math.PI*2;
-  const h = mesh(new THREE.SphereGeometry(rand(4,8), 8, 7), MF(i%2?0x8FD482:0x7FCB90),
-    Math.cos(a)*(WORLD_R+7), -rand(2.5,4), Math.sin(a)*(WORLD_R+7));
-  h.scale.y = .6; scene.add(h);
+/* World-border range: layered hills, a mountain ridge and a tree line wrap the
+   whole horizon so there's no empty blue behind the meadow. The northern arc is
+   skipped — the train station's own mountain backdrop already fills that side. */
+const rimRock = [MF(0x8D9E94), MF(0xA9B6A4), MF(0x65766F), MF(0x9DB39B)];
+const NORTH_GAP = -.6;   // sin(angle) below this is the station/tunnel sector
+for(let i=0;i<30;i++){                    // soft green foothills, full ring
+  const a = i/30*Math.PI*2;
+  const r = WORLD_R + 4 + (i%3)*2.2;
+  const hill = mesh(new THREE.SphereGeometry(rand(5,9), 8, 7), MF(i%2?0x8FD482:0x7FCB90),
+    Math.cos(a)*r, -rand(2.5,4.5), Math.sin(a)*r);
+  hill.scale.set(rand(.9,1.3), .6, rand(.9,1.3)); scene.add(hill);
+}
+for(let i=0;i<34;i++){                     // mountain ridge silhouette
+  const a = i/34*Math.PI*2 + .09;
+  if(Math.sin(a) < NORTH_GAP) continue;
+  const r = WORLD_R + 5 + rand(0,8);
+  const w = rand(4.5,8.5), h = rand(8,17);
+  const peak = mesh(new THREE.ConeGeometry(w, h, Math.random()>.5?6:7), rimRock[i%4],
+    Math.cos(a)*r, h*.5 - 3.4, Math.sin(a)*r);
+  peak.rotation.y = rand(0,7);
+  peak.scale.set(rand(.85,1.3), rand(.92,1.22), rand(.82,1.18));
+  scene.add(peak);
+}
+for(let i=0;i<56;i++){                     // tree line filling the lower band
+  const a = i/56*Math.PI*2 + .04;
+  if(Math.sin(a) < NORTH_GAP - .02) continue;
+  const r = WORLD_R + 2 + rand(0,6);
+  const x = Math.cos(a)*r, z = Math.sin(a)*r;
+  const g = new THREE.Group();
+  if(i%4===0) treeRound(g,false); else treePine(g);
+  g.position.set(x, heightAt(x,z) - .4, z);
+  const s = rand(1.0,1.9); g.scale.set(s,s,s); g.rotation.y = rand(0,7);
+  scene.add(g);
 }
 
 /* ---------- The Lantern Tree (centerpiece) ---------- */
@@ -1276,19 +1307,27 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
   const roofDark = M(0x4F7F63), railMat = M(0x5D5A56,{roughness:.55, metalness:.12});
   const ballastMat = MF(0xAFAFA4), cobbleMats = [M(0xE7DDC8), M(0xD1C7B6), M(0xF1E8D3), M(0xC6C0B4)];
 
-  const forecourt = mesh(new THREE.CircleGeometry(7.6, 40), M(0xD7C9AD,{roughness:1}), 0,.018,5.9, false);
-  forecourt.rotation.x = -Math.PI/2; forecourt.scale.set(1.05,.68,1); station.add(forecourt);
+  // Raised, paved forecourt. The coarse ground-fan mesh rises to ~.15 here, so a flat
+  // ground decal would sink under the grass; instead the plaza is a low cobbled terrace.
+  const PLAZA_Y = .22;
+  const PLAZA_CZ = 5.9;
+  const onPlaza = (lx,lz)=> (lx*lx)/(7.7*7.7) + ((lz-PLAZA_CZ)*(lz-PLAZA_CZ))/(5.3*5.3) < 1;
+  const plazaH = (lx,lz)=> onPlaza(lx,lz) ? PLAZA_Y : 0;
+  const plaza = mesh(new THREE.CylinderGeometry(8.0,8.5,PLAZA_Y+.34,46), M(0xCDBE9E,{roughness:1}), 0, PLAZA_Y-(PLAZA_Y+.34)/2, PLAZA_CZ, false);
+  plaza.scale.set(1.06,1,.74); plaza.receiveShadow = true; station.add(plaza);
+  const curb = mesh(new THREE.TorusGeometry(8.05,.17,8,52), M(0xBCAB87), 0, PLAZA_Y, PLAZA_CZ, false);
+  curb.rotation.x = Math.PI/2; curb.scale.set(1.06,.74,1); station.add(curb);
   const cobbleGeo = new THREE.CircleGeometry(.34, 7);
-  for(let row=0; row<8; row++){
-    const lz = 2.75 + row*.78;
-    const limit = 6.8 * Math.sqrt(Math.max(0, 1 - Math.pow((lz-5.7)/5.1, 2)));
-    for(let col=-7; col<=7; col++){
-      const lx = col*.86 + (row%2)*.42 + rand(-.08,.08);
-      if(Math.abs(lx) > limit || (Math.abs(lx)<1.0 && lz<4.0)) continue;
+  for(let row=0; row<10; row++){
+    const lz = 2.7 + row*.78;
+    const limit = 7.5 * Math.sqrt(Math.max(0, 1 - Math.pow((lz-PLAZA_CZ)/5.6, 2)));
+    for(let col=-9; col<=9; col++){
+      const lx = col*.8 + (row%2)*.4 + rand(-.07,.07);
+      if(Math.abs(lx) > limit) continue;
       const p = new THREE.Mesh(cobbleGeo, cobbleMats[(row+col+20)%cobbleMats.length]);
       p.rotation.x = -Math.PI/2; p.rotation.z = rand(0,7);
-      p.position.set(lx,.045,lz+rand(-.05,.05));
-      p.scale.set(rand(.82,1.18), rand(.72,1.05), 1);
+      p.position.set(lx,PLAZA_Y+.02,lz+rand(-.05,.05));
+      p.scale.set(rand(.86,1.16), rand(.78,1.08), 1);
       p.receiveShadow = true; station.add(p);
     }
   }
@@ -1352,9 +1391,14 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
     const sideWin = roundWindow(); sideWin.position.set(sx*(W/2+.04),1.55,-.55); sideWin.rotation.y = sx*Math.PI/2; station.add(sideWin);
   });
 
-  [2.0,2.42,2.84,3.26].forEach((lz,i)=>{
-    const st = mesh(new THREE.BoxGeometry(2.8-i*.18,.12,.42), stepMat, 0,.28+i*.08,dz+lz, false);
-    station.add(st);
+  // Entry steps that rise toward the door: the tread nearest the building is highest
+  // (meets the porch landing) and they descend outward onto the plaza.
+  [0,1,2].forEach(i=>{
+    const top = .30 + i*.07;             // .30 (outer/low) → .44 (inner, porch level)
+    const front = dz + 1.15 - i*.42;     // outer step reaches farther into the plaza
+    const back = dz - .05;
+    const w = 3.5 - i*.38;
+    station.add(mesh(new THREE.BoxGeometry(w, top, front-back), stepMat, 0, top/2, (front+back)/2, false));
   });
   addStationCollider(0,0,4.15);
 
@@ -1386,13 +1430,60 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
 
   const trackHalf = TRAIN_TRACK_HALF;
   const trackZ = TRAIN_TRACK_Z - TRAIN_STATION_AT.z;
-  station.add(mesh(new THREE.BoxGeometry(trackHalf*2+5,.12,3.25), ballastMat, 0,.08,trackZ, false));
-  for(let x=-trackHalf; x<=trackHalf; x+=1.15){
-    const tie = mesh(new THREE.BoxGeometry(.25,.13,2.42), M(0x7A5236), x,.2,trackZ, false);
-    tie.rotation.y = rand(-.04,.04); station.add(tie);
+  // The ground mesh is a coarse fan that rises up to ~.4 across the corridor, so the
+  // rail bed is built as a raised embankment that always stands clear above it — that
+  // way the ties can never be buried/occluded by ground pushing up between the rails.
+  const RAIL_BED = .5;           // gravel surface height; everything stacks on top
+  const embL = trackHalf*2+6;
+  station.add(mesh(new THREE.BoxGeometry(embL,1.1,5.6), MF(0x84C078), 0,-.15,trackZ, false));   // grassy shoulder, top .4
+  station.add(mesh(new THREE.BoxGeometry(embL,.5,3.6), ballastMat, 0,RAIL_BED-.25,trackZ, false)); // gravel cap, top .5
+
+  const sleeperSpacing = .9;
+  const sleeperStart = -trackHalf - 1.8;
+  const sleeperCount = Math.floor((trackHalf*2 + 3.6) / sleeperSpacing) + 1;
+  const sleeperGeo = new THREE.BoxGeometry(.34,.16,2.82);
+  const sleeperMat = M(0x9B6B4A);
+  const sleepers = new THREE.InstancedMesh(sleeperGeo, sleeperMat, sleeperCount);
+  sleepers.castShadow = sleepers.receiveShadow = true;
+  // The track spans ~110 units but each instanced tie geometry is centred on the
+  // track midpoint, so the default bounding sphere is tiny. Without this the whole
+  // instanced mesh gets frustum-culled (and every tie vanishes) whenever the camera
+  // frames a tunnel end with the midpoint off-screen.
+  sleepers.frustumCulled = false;
+  const sleeperDummy = new THREE.Object3D(), sleeperColor = new THREE.Color();
+  for(let i=0;i<sleeperCount;i++){
+    const x = sleeperStart + i*sleeperSpacing;
+    sleeperDummy.position.set(x, RAIL_BED+.08, trackZ);
+    sleeperDummy.rotation.set(0, 0, 0);
+    sleeperDummy.scale.set(i%7===0 ? 1.04 : 1, 1, i%5===0 ? 1.04 : 1);
+    sleeperDummy.updateMatrix();
+    sleepers.setMatrixAt(i, sleeperDummy.matrix);
+    sleeperColor.setHex(i%3===0 ? 0xA9745B : i%3===1 ? 0x8A5A44 : 0xB07B53);
+    sleepers.setColorAt(i, sleeperColor);
   }
+  sleepers.instanceColor.needsUpdate = true;
+  station.add(sleepers);
+
+  const plateGeo = new THREE.BoxGeometry(.24,.045,.26);
+  const plates = new THREE.InstancedMesh(plateGeo, railMat, sleeperCount*2);
+  plates.castShadow = plates.receiveShadow = true;
+  plates.frustumCulled = false;
+  let plateIdx = 0;
+  for(let i=0;i<sleeperCount;i++){
+    const x = sleeperStart + i*sleeperSpacing;
+    const y = RAIL_BED+.20;
+    [-.62,.62].forEach(offset=>{
+      sleeperDummy.position.set(x, y, trackZ+offset);
+      sleeperDummy.rotation.set(0,0,0);
+      sleeperDummy.scale.set(1,1,1);
+      sleeperDummy.updateMatrix();
+      plates.setMatrixAt(plateIdx++, sleeperDummy.matrix);
+    });
+  }
+  station.add(plates);
+
   [-.62,.62].forEach(offset=>{
-    const rail = mesh(new THREE.CylinderGeometry(.055,.055,trackHalf*2+4,8), railMat, 0,.34,trackZ+offset, false);
+    const rail = mesh(new THREE.CylinderGeometry(.06,.06,trackHalf*2+4,8), railMat, 0,RAIL_BED+.29,trackZ+offset, false);
     rail.rotation.z = Math.PI/2; station.add(rail);
   });
 
@@ -1426,36 +1517,133 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
     station.add(t);
     if(Math.hypot(TRAIN_STATION_AT.x+lx, TRAIN_STATION_AT.z+lz) < WORLD_R) addStationCollider(lx,lz,.55*scale);
   }
+  function archShapeGeo(width, sideH){
+    const r = width/2;
+    const s = new THREE.Shape();
+    s.moveTo(-r,0);
+    s.lineTo(-r,sideH);
+    s.absarc(0,sideH,r,Math.PI,0,true);
+    s.lineTo(r,0);
+    s.lineTo(-r,0);
+    return new THREE.ShapeGeometry(s);
+  }
+  // A rectangular stone face with an arch-shaped opening cut through it, extruded
+  // along its normal so the bore has real depth (front cap = stone, inner walls = dark).
+  function portalFaceGeo(halfW, totalH, archW, archSideH, depth){
+    const shape = new THREE.Shape();
+    shape.moveTo(-halfW, 0);
+    shape.lineTo(-halfW, totalH);
+    shape.lineTo(halfW, totalH);
+    shape.lineTo(halfW, 0);
+    shape.lineTo(-halfW, 0);
+    const r = archW/2;
+    const hole = new THREE.Path();
+    hole.moveTo(-r, 0);
+    hole.lineTo(-r, archSideH);
+    hole.absarc(0, archSideH, r, Math.PI, 0, true);
+    hole.lineTo(r, 0);
+    hole.lineTo(-r, 0);
+    shape.holes.push(hole);
+    return new THREE.ExtrudeGeometry(shape, {depth, bevelEnabled:false, curveSegments:24});
+  }
   function tunnelPortal(side){
     const lx = side*(trackHalf+.7), lz = trackZ;
     const wallY = localHeight(lx,lz);
-    ridgeMound(lx, lz-1.4, 4.8, 2.5, 3.4, mountainDark);
-    ridgeMound(lx+side*1.8, lz-2.6, 3.7, 3.0, 3.1, mountainMat);
-    mountainPeak(lx-side*1.3, lz-3.1, 4.4, 6.8, mountainMat, side*.06);
-    mountainPeak(lx+side*2.6, lz-4.1, 3.7, 5.6, mountainLight, -side*.04);
+    // Rock the portal is carved into. The opening recess must stay clear, so rock only
+    // frames the SIDES of the mouth (offset in z), rises BEHIND it, and overhangs from
+    // ABOVE (the brow, added below) — never directly in front of the dark bore.
+    ridgeMound(lx+side*1.0, lz+3.6, 3.4, 3.6, 3.0, mountainMat);    // south rock wall beside mouth
+    ridgeMound(lx+side*1.0, lz-4.6, 3.6, 3.8, 3.2, mountainLight);  // north rock wall beside mouth
+    ridgeMound(lx+side*2.6, lz+5.6, 4.0, 3.4, 3.2, mountainDark);   // fill behind the flanks
+    ridgeMound(lx+side*2.6, lz-6.4, 4.2, 3.6, 3.4, mountainMat);
+    mountainPeak(lx+side*5.0, lz-1.0, 5.0, 10.5, mountainMat, 0);   // tall mass rising behind
+    mountainPeak(lx+side*3.4, lz+5.2, 4.0, 7.4, mountainDark, 0);
+    mountainPeak(lx+side*5.8, lz-4.6, 4.4, 8.2, mountainLight, 0);
     const portalRing = new THREE.Group();
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.55,.2,8,24), M(0x6F6A61));
-    ring.scale.y = 1.3;
-    ring.rotation.y = side>0 ? -Math.PI/2 : Math.PI/2;
-    ring.position.set(lx, wallY+1.35, lz);
-    ring.castShadow = ring.receiveShadow = true; portalRing.add(ring);
-    const mouth = new THREE.Mesh(new THREE.CircleGeometry(1.38,22), tunnelDark);
-    mouth.scale.y = 1.28;
-    mouth.rotation.y = side>0 ? -Math.PI/2 : Math.PI/2;
-    mouth.position.set(lx-side*.035, wallY+1.35, lz);
-    portalRing.add(mouth);
-    [-.9,0,.9].forEach((oz,i)=>{
-      const block = mesh(new THREE.BoxGeometry(.42,.36,.5), M(i%2?0x9A9287:0x7E796F), lx, wallY+.2+i*.34, lz+oz, false);
-      block.rotation.y = side>0 ? -Math.PI/2 : Math.PI/2;
-      portalRing.add(block);
+    // The face looks back down the track (along -side·X), the bore recedes into the
+    // mountain (along +side·X), so the train rolls straight in horizontally.
+    const faceYaw = side>0 ? Math.PI/2 : -Math.PI/2;
+    const faceX = lx - side*.2;
+    const archW = 2.95, archSideH = 1.3, archR = archW/2;
+    const totalH = 3.75, halfW = 2.6, depth = 1.5;
+    const stoneMat = M(0xB9AFA0), wallStone = M(0x8F8A7E), darkWall = M(0x39403C);
+
+    // Stone face with the arch cut clean through it (front cap stone, inner bore dark).
+    const frame = new THREE.Mesh(portalFaceGeo(halfW, totalH, archW, archSideH, depth), [stoneMat, darkWall]);
+    frame.rotation.y = faceYaw;
+    frame.position.set(faceX, wallY, lz);
+    frame.castShadow = frame.receiveShadow = true;
+    portalRing.add(frame);
+
+    // Dark plane recessed just inside the mouth — reads as the tunnel interior and
+    // reliably occludes the rock behind it. Slightly larger than the hole so its
+    // edges hide behind the stone rim (no daylight gaps around the opening).
+    const voidPlane = new THREE.Mesh(archShapeGeo(archW+.12, archSideH+.05), new THREE.MeshBasicMaterial({color:0x06090B, side:THREE.DoubleSide}));
+    voidPlane.rotation.y = -side*Math.PI/2;
+    voidPlane.position.set(faceX + side*.35, wallY+.02, lz);
+    voidPlane.renderOrder = 2;
+    portalRing.add(voidPlane);
+
+    // Voussoir ring around the arch (stones radiate around the curve), plus a keystone.
+    const voussoirGeo = new THREE.BoxGeometry(.5,.42,.5);
+    for(let i=0;i<=10;i++){
+      const a = i*(Math.PI/10);
+      const by = Math.sin(a)*(archR+.18), bz = Math.cos(a)*(archR+.18);
+      const v = mesh(voussoirGeo, M(i%2?0xC7BDAF:0x9A9287), faceX - side*.12, wallY+archSideH+by, lz+bz, false);
+      v.rotation.y = faceYaw;
+      v.rotation.x = Math.PI/2 - a;
+      portalRing.add(v);
+    }
+    const keystone = mesh(new THREE.BoxGeometry(.62,.7,.62), M(0xD2C8B6), faceX - side*.2, wallY+archSideH+archR+.32, lz, false);
+    keystone.rotation.y = faceYaw; portalRing.add(keystone);
+
+    // Coping along the top edge of the face.
+    portalRing.add(mesh(new THREE.BoxGeometry(.78,.3,halfW*2+.55), stoneMat, faceX - side*.05, wallY+totalH+.12, lz, false));
+
+    // Buttress wings flanking the portal base.
+    [-1,1].forEach(sz=>{
+      const wing = mesh(new THREE.BoxGeometry(.6,1.45,1.9), wallStone, faceX + side*.18, wallY+.72, lz+sz*(halfW+.55), false);
+      wing.rotation.y = faceYaw;
+      portalRing.add(wing);
+      portalRing.add(mesh(new THREE.BoxGeometry(.72,.22,2.05), stoneMat, faceX + side*.18, wallY+1.5, lz+sz*(halfW+.55), false));
     });
+
+    // Overhanging rock brow above the arch — juts out over the mouth so the portal
+    // clearly reads as bored into the cliff (it sits above the opening, never over it).
+    const browMat = MF(0x6F7E76);
+    const brow = mesh(new THREE.DodecahedronGeometry(1,0), browMat, faceX + side*1.0, wallY+totalH+.55, lz, false);
+    brow.scale.set(2.9, 1.7, 4.8);
+    brow.rotation.set(rand(-.1,.1), rand(0,7), side*-.12);
+    portalRing.add(brow);
+    const brow2 = mesh(new THREE.DodecahedronGeometry(1,0), MF(0x82928A), faceX + side*2.4, wallY+totalH+1.5, lz-side*.6, false);
+    brow2.scale.set(3.4, 2.2, 4.2); brow2.rotation.y = rand(0,7);
+    portalRing.add(brow2);
+    // Rock shoulders hugging each side of the portal, tying the face into the cliff.
+    [-1,1].forEach(sz=>{
+      const sh = mesh(new THREE.DodecahedronGeometry(1,0), sz>0?mountainMat:mountainLight,
+                      faceX + side*.55, wallY+1.5, lz+sz*(halfW+1.0), false);
+      sh.scale.set(2.2, 2.6, 2.4); sh.rotation.set(rand(-.12,.12), rand(0,7), rand(-.12,.12));
+      portalRing.add(sh);
+    });
+    // Scree/rubble at the foot of the portal.
+    for(let k=0;k<5;k++){
+      const rx = faceX - side*rand(.2,1.4), rz = lz + rand(-2.6,2.6);
+      const rock = mesh(new THREE.DodecahedronGeometry(rand(.3,.6),0), k%2?mountainDark:mountainMat, rx, wallY+.18, rz, false);
+      rock.rotation.set(rand(0,7),rand(0,7),rand(0,7));
+      portalRing.add(rock);
+    }
+
+    const lintelSign = labelPlane(side<0?'To Willow Pass':'To Maple Pier', 2.15,.48,0xD9C295);
+    lintelSign.rotation.y = faceYaw;
+    lintelSign.position.set(faceX - side*.42, wallY+archSideH+archR+.62, lz);
+    portalRing.add(lintelSign);
     station.add(portalRing);
     const signal = new THREE.Group();
     signal.add(mesh(new THREE.CylinderGeometry(.045,.06,1.3,6), timber, 0,.65,0));
     signal.add(mesh(new THREE.BoxGeometry(.26,.48,.14), M(0x6B4A36), 0,1.38,0));
     signal.add(mesh(new THREE.SphereGeometry(.07,7,6), M(0xE8704A,{emissive:0x842018,emissiveIntensity:.35}), 0,1.5,.08, false));
     signal.add(mesh(new THREE.SphereGeometry(.055,7,6), M(0x8FD482,{emissive:0x3B7A3E,emissiveIntensity:.2}), 0,1.26,.08, false));
-    signal.position.set(lx-side*3.1, wallY, lz+1.72);
+    signal.position.set(lx-side*3.1, RAIL_BED-.1, lz+1.72);
     station.add(signal);
   }
 
@@ -1484,7 +1672,7 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
     signal.add(mesh(new THREE.CylinderGeometry(.04,.055,1.1,6), timber, 0,.55,0));
     signal.add(mesh(new THREE.BoxGeometry(.24,.42,.12), M(0x6B4A36), 0,1.17,0));
     signal.add(mesh(new THREE.SphereGeometry(.06,7,6), M(0xE8704A,{emissive:0x7A1B12,emissiveIntensity:.25}), 0,1.28,.08, false));
-    signal.position.set(x,localHeight(x,trackZ+1.62),trackZ+1.62);
+    signal.position.set(x,RAIL_BED-.1,trackZ+1.62);
     station.add(signal);
   });
 
@@ -1497,7 +1685,7 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
     const bulb = new THREE.Mesh(new THREE.CylinderGeometry(.12,.14,.28,8), stationLampMat);
     bulb.position.y = 1.9; bulb.castShadow = true; L.add(bulb);
     L.add(mesh(new THREE.ConeGeometry(.18,.17,8), timber, 0,2.15,0));
-    L.position.set(lx,0,lz); station.add(L);
+    L.position.set(lx,plazaH(lx,lz),lz); station.add(L);
     addStationCollider(lx,lz,.24);
   }
   [[-5.85,5.55],[5.85,5.55],[-13.2,-2.25],[13.2,-2.25],[-3.6,-5.15],[3.6,-5.15]].forEach(([x,z])=>stationLamp(x,z));
@@ -1510,7 +1698,7 @@ placeHouse({wall:0xEFE7DA, roof:0x8D9A9B, door:0x7A5236, trim:0xFFF6E8, wainscot
       planter.add(mesh(new THREE.CylinderGeometry(.018,.022,.32,5), M(0x5BA85F), -.45+j*.22,.48,rand(-.11,.11), false));
       planter.add(mesh(new THREE.SphereGeometry(.065,7,6), M(j%2?c:0xFFF6E8), -.45+j*.22,.65,rand(-.12,.12), false));
     }
-    planter.position.set(x,0,z); planter.rotation.y = i*.35; station.add(planter);
+    planter.position.set(x,plazaH(x,z),z); planter.rotation.y = i*.35; station.add(planter);
   });
 }
 
